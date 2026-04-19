@@ -1,0 +1,24 @@
+{
+  "name": "quickbite-backend",
+  "version": "1.0.0",
+  "description": "Backend de QuickBite — API Gateway + 5 microservicios",
+  "private": true,
+  "workspaces": [
+    "gateway",
+    "services/*"
+  ],
+  "scripts": {
+    "install:all": "npm install && cd gateway && npm install && cd ../services/auth-service && npm install && cd ../restaurant-service && npm install && cd ../menu-service && npm install && cd ../order-service && npm install && cd ../user-service && npm install",
+    "dev": "concurrently \"cd gateway && npm run dev\" \"cd services/auth-service && npm run dev\" \"cd services/restaurant-service && npm run dev\" \"cd services/menu-service && npm run dev\" \"cd services/order-service && npm run dev\" \"cd services/user-service && npm run dev\"",
+    "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "dotenv": "^17.4.2",
+    "pg": "^8.20.0"
+  }
+}
