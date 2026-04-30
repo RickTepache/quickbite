@@ -1,6 +1,11 @@
 /**
  * Menu Service — Puerto 4003
  * Responsabilidades: listar, crear, actualizar y eliminar platillos del menú
+ *
+ * CORRECCIONES:
+ *  - Bug #2: GET /menu/item/:id ahora se declara ANTES de GET /menu/:restaurantId.
+ *            Antes Express capturaba /menu/item/5 como restaurantId='item' → 400.
+ *            Al invertir el orden, /menu/item/:id se resuelve correctamente.
  */
 require('dotenv').config({ path: '../../.env' })
 const express = require('express')
@@ -55,6 +60,25 @@ const validateMenuItem = (body) => {
   return errors
 }
 
+// ── GET /menu/item/:id — obtener un platillo por su ID ───────
+// CORRECCIÓN Bug #2: Este endpoint va ANTES de /menu/:restaurantId.
+// Si estuviera después, Express lo capturaría como restaurantId='item'.
+app.get('/menu/item/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    if (isNaN(id))
+      return res.status(400).json({ success: false, message: 'ID inválido' })
+
+    const result = await pool.query('SELECT * FROM menu_items WHERE id = $1', [id])
+    if (result.rows.length === 0)
+      return res.status(404).json({ success: false, message: 'Platillo no encontrado' })
+
+    res.json({ success: true, data: result.rows[0] })
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Error al obtener platillo' })
+  }
+})
+
 // ── GET /menu/:restaurantId — obtener menú de un restaurante ─
 app.get('/menu/:restaurantId', async (req, res) => {
   try {
@@ -70,23 +94,6 @@ app.get('/menu/:restaurantId', async (req, res) => {
   } catch (err) {
     console.error('GET /menu error:', err.message)
     res.status(500).json({ success: false, message: 'Error al obtener el menú' })
-  }
-})
-
-// ── GET /menu/item/:id — obtener un platillo ─────────────────
-app.get('/menu/item/:id', async (req, res) => {
-  try {
-    const { id } = req.params
-    if (isNaN(id))
-      return res.status(400).json({ success: false, message: 'ID inválido' })
-
-    const result = await pool.query('SELECT * FROM menu_items WHERE id = $1', [id])
-    if (result.rows.length === 0)
-      return res.status(404).json({ success: false, message: 'Platillo no encontrado' })
-
-    res.json({ success: true, data: result.rows[0] })
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Error al obtener platillo' })
   }
 })
 

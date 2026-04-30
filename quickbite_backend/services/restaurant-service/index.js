@@ -1,6 +1,12 @@
 /**
  * Restaurant Service — Puerto 4002
  * Responsabilidades: listar, crear, actualizar, eliminar restaurantes
+ *
+ * CORRECCIONES:
+ *  - Bug #1: Agregado GET /restaurants/mine (antes de /:id para evitar conflicto)
+ *            El frontend (RestaurantDashboard) llama /restaurants/mine para
+ *            obtener el restaurante del usuario autenticado. Sin este endpoint
+ *            Express lo capturaba como /:id con id='mine' → 400 Bad Request.
  */
 require('dotenv').config({ path: '../../.env' })
 const express = require('express')
@@ -52,6 +58,25 @@ app.get('/restaurants', async (req, res) => {
   } catch (err) {
     console.error('GET /restaurants error:', err.message)
     res.status(500).json({ success: false, message: 'Error al obtener restaurantes' })
+  }
+})
+
+// ── GET /restaurants/mine — restaurante del usuario autenticado ─
+// CORRECCIÓN Bug #1: Este endpoint debe ir ANTES de /restaurants/:id
+// para que Express no interprete "mine" como un parámetro :id numérico.
+app.get('/restaurants/mine', auth, requireRole('restaurant', 'admin'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM restaurants WHERE owner_id = $1 AND active = TRUE LIMIT 1',
+      [req.user.id]
+    )
+    if (result.rows.length === 0)
+      return res.status(404).json({ success: false, message: 'No tienes un restaurante asignado' })
+
+    res.json({ success: true, data: result.rows[0] })
+  } catch (err) {
+    console.error('GET /restaurants/mine error:', err.message)
+    res.status(500).json({ success: false, message: 'Error al obtener tu restaurante' })
   }
 })
 

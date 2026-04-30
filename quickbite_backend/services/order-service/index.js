@@ -1,6 +1,17 @@
 /**
  * Order Service — Puerto 4004
  * Responsabilidades: crear pedidos, cambiar estado, consultar historial
+ *
+ * CORRECCIONES:
+ *  - Bug #3: PATCH /orders/:id/status ahora permite que el cliente (role=customer)
+ *            cancele su propio pedido si aún está en estado 'pending'.
+ *            Antes el endpoint solo admitía roles 'admin' y 'restaurant',
+ *            lo que hacía que el botón "Cancelar" de MyOrders.jsx siempre fallara con 403.
+ *
+ *  - Bug #4: GET /orders/my ahora parsea los campos JSON extras y removed
+ *            de cada order_item antes de devolverlos. Antes se devolvían como
+ *            cadenas crudas mientras que /orders/:id y /orders/restaurant/:id
+ *            sí los parseaban, causando inconsistencia en el frontend.
  */
 require('dotenv').config({ path: '../../.env' })
 const express = require('express')
@@ -76,6 +87,15 @@ const validateOrder = (body) => {
   return errors
 }
 
+// ── Helper para parsear JSON de los items de un pedido ───────
+// CORRECCIÓN Bug #4: Centraliza el parseo para usarlo en todos los endpoints
+const parseOrderItems = (items) =>
+  items.map(item => ({
+    ...item,
+    extras:  (() => { try { return JSON.parse(item.extras  || '[]') } catch { return [] } })(),
+    removed: (() => { try { return JSON.parse(item.removed || '[]') } catch { return [] } })(),
+  }))
+
 // ── POST /orders — crear pedido ──────────────────────────────
 app.post('/orders', auth, async (req, res) => {
   const client = await pool.connect()
@@ -111,7 +131,7 @@ app.post('/orders', auth, async (req, res) => {
         return res.status(404).json({ success: false, message: `Platillo ID ${item.menu_item_id} no disponible` })
       }
 
-      const menuItem   = menuResult.rows[0]
+      const menuItem    = menuResult.rows[0]
       const extrasPrice = Number(item.extras_price) || 0
       const unitPrice   = menuItem.price + extrasPrice
       const lineTotal   = unitPrice * item.quantity
@@ -169,10 +189,11 @@ app.get('/orders/my', auth, async (req, res) => {
        WHERE o.user_id = $1 ORDER BY o.created_at DESC`,
       [req.user.id]
     )
-    // Obtener items de cada pedido
+    // CORRECCIÓN Bug #4: parseOrderItems parsea extras y removed como arrays,
+    // igual que los demás endpoints. Antes se devolvían como strings JSON crudos.
     const orders = await Promise.all(result.rows.map(async (order) => {
       const items = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [order.id])
-      return { ...order, items: items.rows }
+      return { ...order, items: parseOrderItems(items.rows) }
     }))
     res.json({ success: true, data: orders })
   } catch (err) {
@@ -200,14 +221,7 @@ app.get('/orders/restaurant/:restaurantId', auth, requireRole('admin', 'restaura
     const result = await pool.query(queryText, params)
     const orders = await Promise.all(result.rows.map(async (order) => {
       const items = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [order.id])
-      return {
-        ...order,
-        items: items.rows.map(item => ({
-          ...item,
-          extras: JSON.parse(item.extras || '[]'),
-          removed: JSON.parse(item.removed || '[]'),
-        }))
-      }
+      return { ...order, items: parseOrderItems(items.rows) }
     }))
 
     res.json({ success: true, data: orders })
@@ -240,14 +254,7 @@ app.get('/orders/:id', auth, async (req, res) => {
     const items = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [id])
     res.json({
       success: true,
-      data: {
-        ...order,
-        items: items.rows.map(i => ({
-          ...i,
-          extras: JSON.parse(i.extras || '[]'),
-          removed: JSON.parse(i.removed || '[]'),
-        }))
-      }
+      data: { ...order, items: parseOrderItems(items.rows) }
     })
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error al obtener pedido' })
@@ -261,7 +268,7 @@ const STATUS_TRANSITIONS = {
   ready:     'delivered',
 }
 
-app.patch('/orders/:id/status', auth, requireRole('admin', 'restaurant'), async (req, res) => {
+app.patch('/orders/:id/status', auth, async (req, res) => {
   try {
     const { id } = req.params
     const { status } = req.body
@@ -275,13 +282,31 @@ app.patch('/orders/:id/status', auth, requireRole('admin', 'restaurant'), async 
       return res.status(404).json({ success: false, message: 'Pedido no encontrado' })
 
     const order = existing.rows[0]
-    // Verificar transición válida (solo avanzar, no retroceder)
-    const expectedNext = STATUS_TRANSITIONS[order.status]
-    if (status !== 'cancelled' && status !== expectedNext)
-      return res.status(400).json({
-        success: false,
-        message: `No se puede pasar de "${order.status}" a "${status}". El siguiente estado es "${expectedNext}"`
-      })
+
+    // CORRECCIÓN Bug #3: Lógica de permisos por rol
+    // - customer: solo puede cancelar su propio pedido si está 'pending'
+    // - restaurant/admin: pueden avanzar o cancelar cualquier pedido
+    if (req.user.role === 'customer') {
+      if (order.user_id !== req.user.id)
+        return res.status(403).json({ success: false, message: 'Sin permiso para modificar este pedido' })
+      if (status !== 'cancelled')
+        return res.status(403).json({ success: false, message: 'Solo puedes cancelar tu pedido' })
+      if (order.status !== 'pending')
+        return res.status(400).json({
+          success: false,
+          message: 'Solo puedes cancelar pedidos que estén en estado pendiente'
+        })
+    } else if (!['admin', 'restaurant'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Sin permiso' })
+    } else {
+      // restaurant / admin: verificar transición válida
+      const expectedNext = STATUS_TRANSITIONS[order.status]
+      if (status !== 'cancelled' && status !== expectedNext)
+        return res.status(400).json({
+          success: false,
+          message: `No se puede pasar de "${order.status}" a "${status}". El siguiente estado es "${expectedNext}"`
+        })
+    }
 
     const result = await pool.query(
       'UPDATE orders SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
@@ -292,6 +317,40 @@ app.patch('/orders/:id/status', auth, requireRole('admin', 'restaurant'), async 
   } catch (err) {
     console.error('PATCH /orders/:id/status error:', err.message)
     res.status(500).json({ success: false, message: 'Error al actualizar estado' })
+  }
+})
+
+
+// ── GET /orders — todos los pedidos (solo admin) ─────────────
+app.get('/orders', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { status, restaurant_id } = req.query
+    let queryText = `SELECT o.*, r.name AS restaurant_name, u.name AS customer_name
+                     FROM orders o
+                     JOIN restaurants r ON r.id = o.restaurant_id
+                     JOIN users u ON u.id = o.user_id
+                     WHERE 1=1`
+    const params = []
+
+    if (status) {
+      params.push(status)
+      queryText += ` AND o.status = $${params.length}`
+    }
+    if (restaurant_id) {
+      params.push(restaurant_id)
+      queryText += ` AND o.restaurant_id = $${params.length}`
+    }
+    queryText += ' ORDER BY o.created_at DESC LIMIT 200'
+
+    const result = await pool.query(queryText, params)
+    const orders = await Promise.all(result.rows.map(async (order) => {
+      const items = await pool.query('SELECT * FROM order_items WHERE order_id = $1', [order.id])
+      return { ...order, items: parseOrderItems(items.rows) }
+    }))
+    res.json({ success: true, data: orders })
+  } catch (err) {
+    console.error('GET /orders (admin) error:', err.message)
+    res.status(500).json({ success: false, message: 'Error al obtener pedidos' })
   }
 })
 
