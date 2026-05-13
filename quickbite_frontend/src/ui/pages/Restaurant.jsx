@@ -21,6 +21,7 @@ function Restaurant() {
   const [restaurant, setRestaurant] = useState(null)
   const [menu, setMenu] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     const load = async () => {
@@ -34,6 +35,7 @@ function Restaurant() {
         }
       } catch (err) {
         console.error('Error cargando restaurante:', err.message)
+        setError('⚠️ El servicio de menú no está disponible.')
       } finally {
         setLoading(false)
       }
@@ -115,7 +117,11 @@ function Restaurant() {
       <div style={styles.body} className="qb-restaurant-body">
         <div style={styles.menuCol}>
           <h2 style={styles.menuTitle}>Menú</h2>
-          {menu.length === 0 ? (
+          {error ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'red', fontWeight: 600, fontSize: '18px' }}>
+              {error}
+            </div>
+          ) : menu.length === 0 ? (
             <div style={styles.empty}>
               <div style={{ fontSize: "48px", marginBottom: "12px" }} aria-hidden="true">🍽️</div>
               <p style={{ fontSize: "var(--fs-base)" }}>Sin platillos disponibles.</p>
